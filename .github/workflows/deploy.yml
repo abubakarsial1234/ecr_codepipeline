@@ -83,6 +83,37 @@ jobs:
           fi
           aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
+      - name: Get Network Configuration
+        run: |
+          # If secrets are provided, use them
+          if [ -n "${{ secrets.AWS_SUBNET_ID }}" ] && [ -n "${{ secrets.AWS_SECURITY_GROUP_ID }}" ]; then
+            echo "SUBNETS=${{ secrets.AWS_SUBNET_ID }}" >> $GITHUB_ENV
+            echo "SECURITY_GROUP=${{ secrets.AWS_SECURITY_GROUP_ID }}" >> $GITHUB_ENV
+            echo "Using provided subnet and security group from secrets"
+          else
+            echo "Secrets not provided, discovering VPC resources..."
+            # Get default VPC
+            VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text)
+            echo "VPC_ID: $VPC_ID"
+            
+            if [ "$VPC_ID" = "None" ] || [ -z "$VPC_ID" ]; then
+              echo "No default VPC found. Creating one..."
+              VPC_ID=$(aws ec2 create-default-vpc --query 'Vpc.VpcId' --output text)
+              echo "Created VPC: $VPC_ID"
+            fi
+            
+            # Get subnets
+            SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[0:2].SubnetId' --output text | tr '\t' ',')
+            echo "SUBNETS=$SUBNETS" >> $GITHUB_ENV
+            
+            # Get default security group
+            SECURITY_GROUP=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" --query 'SecurityGroups[0].GroupId' --output text)
+            echo "SECURITY_GROUP=$SECURITY_GROUP" >> $GITHUB_ENV
+          fi
+          
+          echo "Final SUBNETS: $SUBNETS"
+          echo "Final SECURITY_GROUP: $SECURITY_GROUP"
+
       - name: Register Backend Task
         run: |
           cat > backend-task.json << 'EOF'
@@ -127,38 +158,49 @@ jobs:
           EOF
           aws ecs register-task-definition --cli-input-json file://frontend-task.json
 
-      - name: Update ECS Services
+      - name: Deploy ECS Services
         run: |
-          SUBNETS="${{ secrets.AWS_SUBNET_ID }}"   # comma-separated if multiple
-          SG="${{ secrets.AWS_SECURITY_GROUP_ID }}" 
+          # Function to check if service exists and is active
+          service_exists() {
+            local service_name=$1
+            local service_status=$(aws ecs describe-services --cluster my-app-cluster --services $service_name --query "services[0].status" --output text 2>/dev/null)
+            [ "$service_status" = "ACTIVE" ]
+          }
 
-          # Backend service
-          if ! aws ecs describe-services --cluster my-app-cluster --services backend-service --query "services[0].status" --output text >/dev/null 2>&1; then
+          # Deploy Backend service
+          echo "Deploying backend service..."
+          if service_exists backend-service; then
+            echo "Updating existing backend service..."
+            aws ecs update-service \
+              --cluster my-app-cluster \
+              --service backend-service \
+              --task-definition backend-task
+          else
+            echo "Creating new backend service..."
             aws ecs create-service \
               --cluster my-app-cluster \
               --service-name backend-service \
               --task-definition backend-task \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}"
-          else
-            aws ecs update-service \
-              --cluster my-app-cluster \
-              --service backend-service \
-              --task-definition backend-task
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}"
           fi
 
-          # Frontend service
-          if ! aws ecs describe-services --cluster my-app-cluster --services frontend-service --query "services[0].status" --output text >/dev/null 2>&1; then
+          # Deploy Frontend service
+          echo "Deploying frontend service..."
+          if service_exists frontend-service; then
+            echo "Updating existing frontend service..."
+            aws ecs update-service \
+              --cluster my-app-cluster \
+              --service frontend-service \
+              --task-definition frontend-task
+          else
+            echo "Creating new frontend service..."
             aws ecs create-service \
               --cluster my-app-cluster \
               --service-name frontend-service \
               --task-definition frontend-task \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}"
-          else
-            aws ecs update-service \
-              --cluster my-app-cluster \
-              --service frontend-service \
-              --task-definition frontend-task
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}"
+          fi
