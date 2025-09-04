@@ -15,9 +15,9 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}  # <-- Apni AWS Access Key yaha
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}  # <-- Apni AWS Secret Key yaha
-          aws-region: us-east-1  # <-- Apni AWS region yaha
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}  # <-- Apni AWS Access Key
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}  # <-- Apni AWS Secret Key
+          aws-region: us-east-1  # <-- Apni AWS region
 
       - name: Create ECR repos
         run: |
@@ -26,7 +26,7 @@ jobs:
 
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com  # <-- Apna AWS Account ID yaha
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
 
       - name: Build & Push Backend
         run: |
@@ -43,6 +43,8 @@ jobs:
       - name: Create ECS Cluster
         run: |
           aws ecs describe-clusters --clusters my-app-cluster || aws ecs create-cluster --cluster-name my-app-cluster
+          # Wait for cluster to be active before creating services
+          aws ecs wait cluster-active --clusters my-app-cluster
 
       - name: Create ECS Execution Role
         run: |
@@ -114,7 +116,7 @@ jobs:
             --task-definition backend-task \
             --desired-count 1 \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"  # <-- Apne subnet aur security group IDs yaha
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"
 
           # Frontend service
           aws ecs update-service --cluster my-app-cluster --service frontend-service --task-definition frontend-task || \
@@ -124,4 +126,4 @@ jobs:
             --task-definition frontend-task \
             --desired-count 1 \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"  # <-- Apne subnet aur security group IDs yaha
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"
