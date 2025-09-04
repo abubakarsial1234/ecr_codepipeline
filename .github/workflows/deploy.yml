@@ -1,0 +1,110 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      # Step 1: Create ECR repos (if not exist)
+      - name: Create ECR repos
+        run: |
+          aws ecr describe-repositories --repository-names backend || aws ecr create-repository --repository-name backend
+          aws ecr describe-repositories --repository-names frontend || aws ecr create-repository --repository-name frontend
+
+      # Step 2: Login to ECR
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+      # Step 3: Build & Push Docker Images
+      - name: Build & Push Backend
+        run: |
+          docker build -t backend ./backend
+          docker tag backend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest
+
+      - name: Build & Push Frontend
+        run: |
+          docker build -t frontend ./frontend
+          docker tag frontend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
+
+      # Step 4: Create ECS cluster if not exists
+      - name: Create ECS Cluster
+        run: |
+          aws ecs describe-clusters --clusters my-app-cluster || aws ecs create-cluster --cluster-name my-app-cluster
+
+      # Step 5: Register ECS Task Definitions
+      - name: Register Backend Task
+        run: |
+          echo '{
+            "family": "backend-task",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "containerDefinitions": [
+              {
+                "name": "backend",
+                "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest",
+                "essential": true,
+                "portMappings": [ { "containerPort": 5000, "protocol": "tcp" } ]
+              }
+            ]
+          }' > backend-task.json
+          aws ecs register-task-definition --cli-input-json file://backend-task.json
+
+      - name: Register Frontend Task
+        run: |
+          echo '{
+            "family": "frontend-task",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "containerDefinitions": [
+              {
+                "name": "frontend",
+                "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest",
+                "essential": true,
+                "portMappings": [ { "containerPort": 3000, "protocol": "tcp" } ]
+              }
+            ]
+          }' > frontend-task.json
+          aws ecs register-task-definition --cli-input-json file://frontend-task.json
+
+      # Step 6: (Optional) Create ALB + Services
+      # ⚠️ This part is long, better to create manually once, then just update services here.
+      - name: Update ECS Services
+        run: |
+          aws ecs update-service --cluster my-app-cluster --service backend-service --task-definition backend-task || \
+          aws ecs create-service \
+            --cluster my-app-cluster \
+            --service-name backend-service \
+            --task-definition backend-task \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx],assignPublicIp=ENABLED}"
+
+          aws ecs update-service --cluster my-app-cluster --service frontend-service --task-definition frontend-task || \
+          aws ecs create-service \
+            --cluster my-app-cluster \
+            --service-name frontend-service \
+            --task-definition frontend-task \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx],assignPublicIp=ENABLED}"
