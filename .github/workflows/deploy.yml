@@ -15,40 +15,51 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}  # <-- Apni AWS Access Key yaha
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}  # <-- Apni AWS Secret Key yaha
+          aws-region: us-east-1  # <-- Apni AWS region yaha
 
-      # Step 1: Create ECR repos (if not exist)
       - name: Create ECR repos
         run: |
           aws ecr describe-repositories --repository-names backend || aws ecr create-repository --repository-name backend
           aws ecr describe-repositories --repository-names frontend || aws ecr create-repository --repository-name frontend
 
-      # Step 2: Login to ECR
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com  # <-- Apna AWS Account ID yaha
 
-      # Step 3: Build & Push Docker Images
       - name: Build & Push Backend
         run: |
           docker build -t backend ./backend
-          docker tag backend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest
+          docker tag backend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest  # <-- Apna AWS Account ID yaha
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest  # <-- Apna AWS Account ID yaha
 
       - name: Build & Push Frontend
         run: |
           docker build -t frontend ./frontend
-          docker tag frontend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
+          docker tag frontend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest  # <-- Apna AWS Account ID yaha
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest  # <-- Apna AWS Account ID yaha
 
-      # Step 4: Create ECS cluster if not exists
       - name: Create ECS Cluster
         run: |
           aws ecs describe-clusters --clusters my-app-cluster || aws ecs create-cluster --cluster-name my-app-cluster
 
-      # Step 5: Register ECS Task Definitions
+      - name: Create ECS Execution Role
+        run: |
+          ROLE_NAME="ecsTaskExecutionRole"
+          aws iam get-role --role-name $ROLE_NAME || \
+          aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document '{
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }'
+          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
       - name: Register Backend Task
         run: |
           echo '{
@@ -57,10 +68,11 @@ jobs:
             "requiresCompatibilities": ["FARGATE"],
             "cpu": "256",
             "memory": "512",
+            "executionRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole",  # <-- Apna AWS Account ID yaha
             "containerDefinitions": [
               {
                 "name": "backend",
-                "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest",
+                "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/backend:latest",  # <-- Apna AWS Account ID yaha
                 "essential": true,
                 "portMappings": [ { "containerPort": 5000, "protocol": "tcp" } ]
               }
@@ -76,10 +88,11 @@ jobs:
             "requiresCompatibilities": ["FARGATE"],
             "cpu": "256",
             "memory": "512",
+            "executionRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/ecsTaskExecutionRole",  # <-- Apna AWS Account ID yaha
             "containerDefinitions": [
               {
                 "name": "frontend",
-                "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest",
+                "image": "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest",  # <-- Apna AWS Account ID yaha
                 "essential": true,
                 "portMappings": [ { "containerPort": 3000, "protocol": "tcp" } ]
               }
@@ -87,10 +100,9 @@ jobs:
           }' > frontend-task.json
           aws ecs register-task-definition --cli-input-json file://frontend-task.json
 
-      # Step 6: (Optional) Create ALB + Services
-      # ⚠️ This part is long, better to create manually once, then just update services here.
       - name: Update ECS Services
         run: |
+          # Backend service
           aws ecs update-service --cluster my-app-cluster --service backend-service --task-definition backend-task || \
           aws ecs create-service \
             --cluster my-app-cluster \
@@ -98,8 +110,9 @@ jobs:
             --task-definition backend-task \
             --desired-count 1 \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx],assignPublicIp=ENABLED}"
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx],assignPublicIp=ENABLED}"  # <-- Apne subnet aur security group IDs yaha
 
+          # Frontend service
           aws ecs update-service --cluster my-app-cluster --service frontend-service --task-definition frontend-task || \
           aws ecs create-service \
             --cluster my-app-cluster \
@@ -107,4 +120,4 @@ jobs:
             --task-definition frontend-task \
             --desired-count 1 \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx],assignPublicIp=ENABLED}"
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"  # <-- Apne subnet aur security group IDs yaha
