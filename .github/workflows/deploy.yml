@@ -15,14 +15,20 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}  # <-- Apni AWS Access Key
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}  # <-- Apni AWS Secret Key
-          aws-region: us-east-1  # <-- Apni AWS region
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-      - name: Create ECR repos
+      - name: Create ECR repos if not exists
         run: |
-          aws ecr describe-repositories --repository-names backend || aws ecr create-repository --repository-name backend
-          aws ecr describe-repositories --repository-names frontend || aws ecr create-repository --repository-name frontend
+          for REPO in backend frontend; do
+            if ! aws ecr describe-repositories --repository-names $REPO >/dev/null 2>&1; then
+              echo "Creating ECR repo: $REPO"
+              aws ecr create-repository --repository-name $REPO
+            else
+              echo "ECR repo $REPO exists"
+            fi
+          done
 
       - name: Login to Amazon ECR
         run: |
@@ -40,26 +46,33 @@ jobs:
           docker tag frontend:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
 
-      - name: Create ECS Cluster
+      - name: Create ECS Cluster if not exists
         run: |
-          aws ecs describe-clusters --clusters my-app-cluster || aws ecs create-cluster --cluster-name my-app-cluster
-          # Wait for cluster to be active before creating services
-          aws ecs wait cluster-active --clusters my-app-cluster
+          CLUSTER_NAME="my-app-cluster"
+          STATUS=$(aws ecs describe-clusters --clusters $CLUSTER_NAME --query "clusters[0].status" --output text 2>/dev/null)
+          if [ "$STATUS" != "ACTIVE" ]; then
+            echo "Cluster not found. Creating..."
+            aws ecs create-cluster --cluster-name $CLUSTER_NAME
+          else
+            echo "Cluster already exists."
+          fi
+          aws ecs wait cluster-active --clusters $CLUSTER_NAME
 
-      - name: Create ECS Execution Role
+      - name: Create ECS Execution Role if not exists
         run: |
           ROLE_NAME="ecsTaskExecutionRole"
-          aws iam get-role --role-name $ROLE_NAME || \
-          aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document '{
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Principal": { "Service": "ecs-tasks.amazonaws.com" },
-                "Action": "sts:AssumeRole"
-              }
-            ]
-          }'
+          if ! aws iam get-role --role-name $ROLE_NAME >/dev/null 2>&1; then
+            aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+                  "Action": "sts:AssumeRole"
+                }
+              ]
+            }'
+          fi
           aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
       - name: Register Backend Task
@@ -108,22 +121,37 @@ jobs:
 
       - name: Update ECS Services
         run: |
+          SUBNETS="${{ secrets.AWS_SUBNET_ID }}"
+          SG="${{ secrets.AWS_SECURITY_GROUP_ID }}"
+
           # Backend service
-          aws ecs update-service --cluster my-app-cluster --service backend-service --task-definition backend-task || \
-          aws ecs create-service \
-            --cluster my-app-cluster \
-            --service-name backend-service \
-            --task-definition backend-task \
-            --desired-count 1 \
-            --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"
+          if ! aws ecs describe-services --cluster my-app-cluster --services backend-service --query "services[0].status" --output text >/dev/null 2>&1; then
+            aws ecs create-service \
+              --cluster my-app-cluster \
+              --service-name backend-service \
+              --task-definition backend-task \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}"
+          else
+            aws ecs update-service \
+              --cluster my-app-cluster \
+              --service backend-service \
+              --task-definition backend-task
+          fi
 
           # Frontend service
-          aws ecs update-service --cluster my-app-cluster --service frontend-service --task-definition frontend-task || \
-          aws ecs create-service \
-            --cluster my-app-cluster \
-            --service-name frontend-service \
-            --task-definition frontend-task \
-            --desired-count 1 \
-            --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-03c2551165fa51fbb],securityGroups=[sg-0099d6aef13949c30],assignPublicIp=ENABLED}"
+          if ! aws ecs describe-services --cluster my-app-cluster --services frontend-service --query "services[0].status" --output text >/dev/null 2>&1; then
+            aws ecs create-service \
+              --cluster my-app-cluster \
+              --service-name frontend-service \
+              --task-definition frontend-task \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}"
+          else
+            aws ecs update-service \
+              --cluster my-app-cluster \
+              --service frontend-service \
+              --task-definition frontend-task
+          fi
